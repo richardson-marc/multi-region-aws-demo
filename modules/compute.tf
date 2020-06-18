@@ -10,38 +10,17 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
-data "aws_ami" "default" {
-  most_recent = true
-
-  filter {
-    name   = "name"
-# this should pull down the latest OL 7.5 image
-    values = ["OL7.5-x86_64-HVM-2018*"]
-  }
-
-#  filter {
-#    name   = "architecture"
-#    values = ["x86_64"]
-#  }
-
-#  filter {
-#    name   = "virtualization-type"
-#    values = ["hvm"]
-#  }
-
-#  filter {
-#    name   = "root-device-type"
-#    values = ["ebs"]
-#  }
-
-#  owners = ["amazon"]
+resource "aws_key_pair" "burst-key" {
+  key_name   = "burst-key"
+  public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDY1DE9tyhhe0BKDVTPM546oby4sSRD0+PjovBlQW2a1H0AkQ4r3RpqP26JGY8bG1nJdyCIbh3HwRgzYvmLwasRaxOkw7K6YSKa06QQfsDPRoDs5bJB75jLv/MnYMeFYto/trIdJTj/16wcgsUWlTjCsok4exCMQCxkv8wChzV0H53ZIrXnfnRr2E/RvdtiNXD5d5rfFo4WRcusyJ9+TChD0O6tAG1PMRtmVgTmeiCIFe7Lj6aVCDn4gn0p95den/az6jBwtWvJKA1k6dzFJCW2dD7PP67j1CiyX2VfVTIdjrtAa4Mo1k1+U3vjz22IBpGFR+UPKy2u0xkMiVDyEFtH marc@lk.local"
 }
 
 resource "aws_vpc" "main" {
-  cidr_block                       = "192.168.0.0/16"
-#  assign_generated_ipv6_cidr_block = "true"
-  enable_dns_support               = "true"
-  enable_dns_hostnames             = "true"
+  cidr_block = "192.168.0.0/16"
+
+  #  assign_generated_ipv6_cidr_block = "true"
+  enable_dns_support   = "true"
+  enable_dns_hostnames = "true"
 
   tags {
     Name = "ovp-${var.region}-vpc"
@@ -57,8 +36,7 @@ resource "aws_internet_gateway" "default" {
 }
 
 resource "aws_subnet" "public" {
-  #  count                           = "${length(data.aws_availability_zones.available.names)}"
-  count      = "1"
+  count      = "2"
   vpc_id     = "${aws_vpc.main.id}"
   cidr_block = "${cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)}"
 
@@ -69,7 +47,6 @@ resource "aws_subnet" "public" {
 }
 
 resource "aws_route_table" "public" {
-  #  count  = "${length(data.aws_availability_zones.available.names)}"
   count  = "1"
   vpc_id = "${aws_vpc.main.id}"
 
@@ -78,15 +55,11 @@ resource "aws_route_table" "public" {
     gateway_id = "${aws_internet_gateway.default.id}"
   }
 
-#  route {
-#    ipv6_cidr_block = "::/0"
-#    gateway_id      = "${aws_internet_gateway.default.id}"
-#  }
 }
 
 resource "aws_route_table_association" "public" {
-  #  count          = "${length(data.aws_availability_zones.available.names)}"
-  count          = "1"
+
+  count          = "2"
   subnet_id      = "${element(aws_subnet.public.*.id, count.index)}"
   route_table_id = "${element(aws_route_table.public.*.id, count.index)}"
 }
@@ -100,54 +73,59 @@ resource "aws_security_group" "default" {
     protocol    = "icmp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  ingress {
+    from_port = 22
+    to_port = 22
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port = 80
+    to_port = 80
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port = 443
+    to_port = 443
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-#  ingress {
-#    from_port        = -1
-#    to_port          = -1
-#    protocol         = "icmpv6"
-#    ipv6_cidr_blocks = ["::/0"]
-#  }
 }
 
 resource "aws_instance" "server" {
-  #  count                  = "${length(data.aws_availability_zones.available.names) * var.servers_per_az}"
-  count                  = "1"
-  instance_type          = "${var.instance_type}"
-  ami                    = "${data.aws_ami.default.id}"
-  subnet_id              = "${element(aws_subnet.public.*.id, count.index)}"
-#  ipv6_address_count     = "1"
+ timeouts {
+    create = "60m"
+    delete = "2h"
+  }
+key_name      = "burst-key"
+  count         = "2"
+  instance_type = "${var.instance_type}"
+  ami           = "ami-01ca03df4a6012157"
+  subnet_id     = "${element(aws_subnet.public.*.id, count.index)}"
+
+  #  ipv6_address_count     = "1"
   vpc_security_group_ids = ["${aws_security_group.default.id}", "${aws_vpc.main.default_security_group_id}"]
 
   tags = {
-    Name            = "ovp-${element(data.aws_availability_zones.available.names, count.index)}"
-    EnvironmentName = "${var.env}"
-    CostArea        = "${var.cost_area}"
-    Squad           = "${var.squad}"
-#    FQDN            = "${var.substr1}${count.index+1}${var.substr3}"
-    ProductCode     = "${var.ProductCode}"
-    Owner           = "${var.Owner}"
+    Name 	    = "server${format("%01d", count.index+1)}"
   }
+
+
+
 }
 
-# chef stuff
-# By keeping this out of the  instance resource we can (with additional
-# work) make chef-bootstrap conditional in the future
-# resource "null_resource" "chef-bootstrap" {
-#   count = "${var.chef_provision ? var.instance_count : 0}"
+resource "aws_elb" "foo" {
+  name            = "foo"
+  subnets         = ["${aws_subnet.public.*.id}"]
+  security_groups = ["${aws_security_group.default.id}"]
 
-#   connection {
-#     type        = "ssh"
-#     user        = "${var.ssh_user}"
-#     host        = "${element(oci_core_instance.TFInstance.*.private_ip, count.index)}"
-#     private_key = "${file(var.ssh_private_key_path)}"
-#   }
-
-#   provisioner "remote-exec" {
-#     inline = [
-#       "export PATH=$PATH:/usr/bin",
-#       # install nginx
-# #      "sudo apt-get update",
-#       "sudo yum install -y install nginx"
-#     ]
-#   }
-# }
+  instances = ["${aws_instance.server.*.id}"]
+listener {
+    instance_port     = 80
+    instance_protocol = "http"
+    lb_port           = 80
+    lb_protocol       = "http"
+  }
+}
